@@ -391,214 +391,220 @@ export function AddNodeDialog({
   }
 
   return (
-    <>
-      {/* Full-screen map overlay for selection mode */}
-      {isMapSelectionMode && (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          className="fixed inset-0 z-40 pointer-events-none"
-        />
-      )}
-      
-      {/* Main Modal */}
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        className={`fixed inset-0 ${
-          isMapSelectionMode ? 'bg-transparent' : 'bg-black/50'
-        } flex items-end justify-center z-50 md:items-center p-4`}
-        style={{ pointerEvents: isMapSelectionMode ? 'none' : 'auto' }}
-        onClick={!isMapSelectionMode ? onClose : undefined}
-      >
-        <motion.div
-          initial={{ scale: 0.95, opacity: 0, y: 20 }}
-          animate={{ scale: 1, opacity: 1, y: 0 }}
-          exit={{ scale: 0.95, opacity: 0, y: 20 }}
-          onClick={(e) => e.stopPropagation()}
-          className="w-full max-w-4xl mx-auto flex flex-col md:flex-row gap-4 max-h-[90vh] overflow-y-auto"
-          style={{ pointerEvents: 'auto' }}
-        >
-          {/* Left Panel - Node Creation Form */}
-          <div className="glass-card rounded-2xl p-6 md:p-8 flex-1 md:max-w-md">
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-xl font-bold text-white flex items-center gap-2">
-                <MapPin className="w-5 h-5 text-blue-400" />
-                Add Monitoring Node
-              </h2>
-              <button
-                onClick={onClose}
-                className="p-1 hover:bg-white/10 rounded-lg transition-colors"
-              >
-                <X className="w-4 h-4 text-white/60" />
-              </button>
-            </div>
-
-            <div className="space-y-4 mb-6">
-              {/* Node Name */}
-              <div>
-                <Label htmlFor="nodeName" className="text-white/80 block mb-2">
-                  Node Name
-                </Label>
-                <Input
-                  id="nodeName"
-                  value={nodeName}
-                  onChange={(e) => setNodeName(e.target.value)}
-                  placeholder="e.g., San Francisco Station"
-                  className="bg-white/10 border-white/20 text-white placeholder:text-white/40"
-                />
-              </div>
-
-              {/* Location Display */}
-              <div>
-                <Label className="text-white/80 block mb-2">Location</Label>
-                {selectedLocation ? (
-                  <div className="bg-green-500/20 border border-green-400/40 rounded-lg p-3">
-                    <p className="text-sm text-green-300 flex items-center gap-2">
-                      <Target className="w-4 h-4" />
-                      Location Selected
-                    </p>
-                    <p className="text-xs text-green-200 mt-1 font-mono">
-                      {selectedLocation.lat.toFixed(6)}, {selectedLocation.lng.toFixed(6)}
-                    </p>
-                  </div>
-                ) : (
-                  <div className="bg-yellow-500/20 border border-yellow-400/40 rounded-lg p-3">
-                    <p className="text-sm text-yellow-300 flex items-center gap-2">
-                      <AlertCircle className="w-4 h-4" />
-                      Click on the map to select location
-                    </p>
-                  </div>
-                )}
-              </div>
-
-              {/* Radius */}
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <Label htmlFor="radius" className="text-white/80">
-                    Monitoring Radius (km)
-                  </Label>
-                  <span className="text-sm text-blue-400 font-mono">{radiusKm} km</span>
+    <AnimatePresence>
+      {isOpen && (
+        <>
+          {/* Full-screen map overlay for selection mode - below dialog but above map */}
+          {isMapSelectionMode && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[100] pointer-events-none"
+            />
+          )}
+          
+          {/* Main Modal - Highest z-index */}
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 flex items-end justify-center z-[9999] md:items-center p-4"
+            style={{ 
+              pointerEvents: isMapSelectionMode ? 'none' : 'auto',
+              backgroundColor: isMapSelectionMode ? 'transparent' : 'rgba(0, 0, 0, 0.6)',
+              backdropFilter: isMapSelectionMode ? 'none' : 'blur(4px)',
+            }}
+            onClick={!isMapSelectionMode ? onClose : undefined}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 20 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-4xl mx-auto flex flex-col md:flex-row gap-4 max-h-[90vh] overflow-y-auto"
+              style={{ pointerEvents: 'auto' }}
+            >
+              {/* Left Panel - Node Creation Form */}
+              <div className="glass-card rounded-2xl p-6 md:p-8 flex-1 md:max-w-md shadow-2xl">
+                <div className="flex items-center justify-between mb-6">
+                  <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                    <MapPin className="w-5 h-5 text-blue-400" />
+                    Add Monitoring Node
+                  </h2>
+                  <button
+                    onClick={onClose}
+                    className="p-1 hover:bg-white/10 rounded-lg transition-colors"
+                  >
+                    <X className="w-4 h-4 text-white/60" />
+                  </button>
                 </div>
-                <Input
-                  id="radius"
-                  type="number"
-                  value={radiusKm}
-                  onChange={(e) => setRadiusKm(e.target.value)}
-                  min="1"
-                  max="50"
-                  step="0.5"
-                  placeholder="5"
-                  className="bg-white/10 border-white/20 text-white placeholder:text-white/40"
-                />
-                {/* Visual radius indicator */}
-                <div className="mt-2 flex items-center gap-2">
-                  <div className="flex-1 h-1 bg-white/10 rounded-full overflow-hidden">
-                    <div 
-                      className="h-full bg-gradient-to-r from-blue-400 to-cyan-400 rounded-full transition-all duration-300"
-                      style={{ width: `${(parseFloat(radiusKm) / 50) * 100}%` }}
+
+                <div className="space-y-4 mb-6">
+                  {/* Node Name */}
+                  <div>
+                    <Label htmlFor="nodeName" className="text-white/80 block mb-2">
+                      Node Name
+                    </Label>
+                    <Input
+                      id="nodeName"
+                      value={nodeName}
+                      onChange={(e) => setNodeName(e.target.value)}
+                      placeholder="e.g., San Francisco Station"
+                      className="bg-white/10 border-white/20 text-white placeholder:text-white/40"
                     />
                   </div>
-                  <span className="text-xs text-white/40">{Math.min(parseFloat(radiusKm), 50)}km</span>
+
+                  {/* Location Display */}
+                  <div>
+                    <Label className="text-white/80 block mb-2">Location</Label>
+                    {selectedLocation ? (
+                      <div className="bg-green-500/20 border border-green-400/40 rounded-lg p-3">
+                        <p className="text-sm text-green-300 flex items-center gap-2">
+                          <Target className="w-4 h-4" />
+                          Location Selected
+                        </p>
+                        <p className="text-xs text-green-200 mt-1 font-mono">
+                          {selectedLocation.lat.toFixed(6)}, {selectedLocation.lng.toFixed(6)}
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="bg-yellow-500/20 border border-yellow-400/40 rounded-lg p-3">
+                        <p className="text-sm text-yellow-300 flex items-center gap-2">
+                          <AlertCircle className="w-4 h-4" />
+                          Click on the map to select location
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Radius */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <Label htmlFor="radius" className="text-white/80">
+                        Monitoring Radius (km)
+                      </Label>
+                      <span className="text-sm text-blue-400 font-mono">{radiusKm} km</span>
+                    </div>
+                    <Input
+                      id="radius"
+                      type="number"
+                      value={radiusKm}
+                      onChange={(e) => setRadiusKm(e.target.value)}
+                      min="1"
+                      max="50"
+                      step="0.5"
+                      placeholder="5"
+                      className="bg-white/10 border-white/20 text-white placeholder:text-white/40"
+                    />
+                    {/* Visual radius indicator */}
+                    <div className="mt-2 flex items-center gap-2">
+                      <div className="flex-1 h-1 bg-white/10 rounded-full overflow-hidden">
+                        <div 
+                          className="h-full bg-gradient-to-r from-blue-400 to-cyan-400 rounded-full transition-all duration-300"
+                          style={{ width: `${(parseFloat(radiusKm) / 50) * 100}%` }}
+                        />
+                      </div>
+                      <span className="text-xs text-white/40">{Math.min(parseFloat(radiusKm), 50)}km</span>
+                    </div>
+                  </div>
+
+                  {/* Node Preview with Radius Circle */}
+                  {selectedLocation && (
+                    <div className="relative bg-black/30 rounded-xl p-4 border border-white/10 overflow-hidden h-32">
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <div className="relative">
+                          {/* Radius circle visualization */}
+                          <motion.div
+                            initial={{ scale: 0 }}
+                            animate={{ scale: 1 }}
+                            transition={{ duration: 0.5, type: "spring" }}
+                            className="rounded-full border-2 border-blue-400/40 bg-blue-500/10"
+                            style={{ 
+                              width: `${nodeRadius * 4}px`, 
+                              height: `${nodeRadius * 4}px`,
+                              margin: 'auto'
+                            }}
+                          >
+                            <div className="absolute inset-0 flex items-center justify-center">
+                              <motion.div
+                                animate={{ scale: [1, 1.2, 1] }}
+                                transition={{ duration: 2, repeat: Infinity }}
+                                className="w-3 h-3 bg-blue-400 rounded-full"
+                              />
+                            </div>
+                          </motion.div>
+                          {/* Label */}
+                          <div className="absolute -bottom-6 left-1/2 transform -translate-x-1/2 whitespace-nowrap">
+                            <span className="text-xs text-white/60">Node Perimeter</span>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="absolute bottom-1 right-2">
+                        <span className="text-[10px] text-white/20 font-mono">
+                          {selectedLocation.lat.toFixed(4)}, {selectedLocation.lng.toFixed(4)}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Error Message */}
+                  {error && (
+                    <div className="bg-red-500/20 border border-red-400/40 rounded-lg p-3">
+                      <p className="text-sm text-red-300 flex items-center gap-2">
+                        <AlertCircle className="w-4 h-4" />
+                        {error}
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Map Selection Mode Toggle */}
+                <button
+                  onClick={onToggleMapMode}
+                  className={`w-full mb-4 py-2.5 px-4 rounded-lg font-medium transition-all duration-200 ${
+                    isMapSelectionMode
+                      ? 'bg-blue-500/30 text-blue-300 border border-blue-400/60 shadow-lg shadow-blue-500/20'
+                      : 'bg-white/10 text-white/60 border border-white/20 hover:bg-white/20'
+                  }`}
+                >
+                  {isMapSelectionMode ? '📍 Map Mode: ON - Click map to select' : '🗺️ Enable Map Selection'}
+                </button>
+
+                {/* Action Buttons */}
+                <div className="flex gap-3">
+                  <button
+                    onClick={onClose}
+                    className="flex-1 py-2.5 px-4 rounded-lg bg-white/10 text-white border border-white/20 hover:bg-white/20 transition-colors font-medium"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleSubmit}
+                    disabled={!selectedLocation || !nodeName.trim()}
+                    className="flex-1 py-2.5 px-4 rounded-lg bg-blue-500/30 text-blue-300 border border-blue-400/40 hover:bg-blue-500/40 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium"
+                  >
+                    Create Node
+                  </button>
                 </div>
               </div>
 
-              {/* Node Preview with Radius Circle */}
-              {selectedLocation && (
-                <div className="relative bg-black/30 rounded-xl p-4 border border-white/10 overflow-hidden h-32">
-                  <div className="absolute inset-0 flex items-center justify-center">
-                    <div className="relative">
-                      {/* Radius circle visualization */}
-                      <motion.div
-                        initial={{ scale: 0 }}
-                        animate={{ scale: 1 }}
-                        transition={{ duration: 0.5, type: "spring" }}
-                        className="rounded-full border-2 border-blue-400/40 bg-blue-500/10"
-                        style={{ 
-                          width: `${nodeRadius * 4}px`, 
-                          height: `${nodeRadius * 4}px`,
-                          margin: 'auto'
-                        }}
-                      >
-                        <div className="absolute inset-0 flex items-center justify-center">
-                          <motion.div
-                            animate={{ scale: [1, 1.2, 1] }}
-                            transition={{ duration: 2, repeat: Infinity }}
-                            className="w-3 h-3 bg-blue-400 rounded-full"
-                          />
-                        </div>
-                      </motion.div>
-                      {/* Label */}
-                      <div className="absolute -bottom-6 left-1/2 transform -translate-x-1/2 whitespace-nowrap">
-                        <span className="text-xs text-white/60">Node Perimeter</span>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="absolute bottom-1 right-2">
-                    <span className="text-[10px] text-white/20 font-mono">
-                      {selectedLocation.lat.toFixed(4)}, {selectedLocation.lng.toFixed(4)}
-                    </span>
-                  </div>
-                </div>
-              )}
-
-              {/* Error Message */}
-              {error && (
-                <div className="bg-red-500/20 border border-red-400/40 rounded-lg p-3">
-                  <p className="text-sm text-red-300 flex items-center gap-2">
-                    <AlertCircle className="w-4 h-4" />
-                    {error}
-                  </p>
-                </div>
-              )}
-            </div>
-
-            {/* Map Selection Mode Toggle */}
-            <button
-              onClick={onToggleMapMode}
-              className={`w-full mb-4 py-2.5 px-4 rounded-lg font-medium transition-all duration-200 ${
-                isMapSelectionMode
-                  ? 'bg-blue-500/30 text-blue-300 border border-blue-400/60 shadow-lg shadow-blue-500/20'
-                  : 'bg-white/10 text-white/60 border border-white/20 hover:bg-white/20'
-              }`}
-            >
-              {isMapSelectionMode ? '📍 Map Mode: ON - Click map to select' : '🗺️ Enable Map Selection'}
-            </button>
-
-            {/* Action Buttons */}
-            <div className="flex gap-3">
-              <button
-                onClick={onClose}
-                className="flex-1 py-2.5 px-4 rounded-lg bg-white/10 text-white border border-white/20 hover:bg-white/20 transition-colors font-medium"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleSubmit}
-                disabled={!selectedLocation || !nodeName.trim()}
-                className="flex-1 py-2.5 px-4 rounded-lg bg-blue-500/30 text-blue-300 border border-blue-400/40 hover:bg-blue-500/40 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium"
-              >
-                Create Node
-              </button>
-            </div>
-          </div>
-
-          {/* Right Panel - Node Readings */}
-          <div className="flex-1 md:min-w-[380px]">
-            <NodeReadingsDashboard node={selectedNode || (readings ? {
-              id: 'preview',
-              name: nodeName || 'Preview Node',
-              lat: selectedLocation?.lat || 0,
-              lng: selectedLocation?.lng || 0,
-              radiusKm: parseFloat(radiusKm) || 5,
-              readings: readings,
-              isActive: true
-            } : null)} />
-          </div>
-        </motion.div>
-      </motion.div>
-    </>
+              {/* Right Panel - Node Readings */}
+              <div className="flex-1 md:min-w-[380px]">
+                <NodeReadingsDashboard node={selectedNode || (readings ? {
+                  id: 'preview',
+                  name: nodeName || 'Preview Node',
+                  lat: selectedLocation?.lat || 0,
+                  lng: selectedLocation?.lng || 0,
+                  radiusKm: parseFloat(radiusKm) || 5,
+                  readings: readings,
+                  isActive: true
+                } : null)} />
+              </div>
+            </motion.div>
+          </motion.div>
+        </>
+      )}
+    </AnimatePresence>
   )
 }
