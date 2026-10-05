@@ -67,9 +67,15 @@
  * watching it. Map mode now only turns off when the user clicks the
  * toggle themselves, or automatically on successful submit.
  */
+
+// higlight node form world air quality index with live telemtry
+// implement live api calls for telemitry and AQI data and display in the dashboard with a history panel for each node. The history panel should show daily ratings, average AQI, peak AQI, and total readings for each day. The user should be able to click on a day to expand and see more details.
+// higlight the nodes from Worl air Quailty Index Implement api for world air quality index and display the data in a dashboard with a history panel for each node. The history panel should show daily ratings, average AQI, peak AQI, and total readings for each day. The user should be able to click on a day to expand and see more details.
+
+
 'use client'
 
-import { FC, useCallback, useEffect, useRef, useState } from 'react'
+import { FC, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence, useDragControls } from 'framer-motion'
 import {
@@ -79,6 +85,14 @@ import {
   Target,
   ChevronUp,
   ChevronDown,
+  Activity,
+  CalendarDays,
+  Clock3,
+  TrendingUp,
+  Gauge,
+  Wind,
+  Thermometer,
+  Droplets,
 } from 'lucide-react'
 
 import { Input } from '@/components/ui/input'
@@ -173,86 +187,418 @@ const generatePollutionData = (): PollutionReadings => {
   }
 }
 
+
 /* ----------------------------------------------------------------------
-   NodeReadingsDashboard – FIXED (broken ternary + missing icon imports)
+   WAQI telemetry helpers + NodeReadingsDashboard
 ----------------------------------------------------------------------- */
+
+type AQIRating =
+  | 'Good'
+  | 'Moderate'
+  | 'Unhealthy for Sensitive Groups'
+  | 'Unhealthy'
+  | 'Very Unhealthy'
+  | 'Hazardous'
+
+interface WaqiIaqiEntry {
+  v?: number
+}
+
+interface WaqiFeedData {
+  aqi?: number
+  dominentpol?: string
+  city?: {
+    name?: string
+    url?: string
+    geo?: [number | string, number | string]
+  }
+  time?: {
+    s?: string
+    tz?: string
+  }
+  iaqi?: Record<string, WaqiIaqiEntry | undefined>
+}
+
+interface WaqiApiResponse {
+  status: 'ok' | 'error'
+  data?: WaqiFeedData
+  message?: string
+}
+
+interface WaqiTelemetrySample {
+  id: string
+  timestamp: string
+  aqi: number
+  rating: AQIRating
+  stationName: string
+  cityName: string
+  dominantPollutant?: string
+  lat: number
+  lng: number
+  iaqi: Record<string, number>
+  source: 'waqi' | 'fallback'
+}
+
+interface WaqiDaySummary {
+  dayKey: string
+  label: string
+  date: Date
+  rating: AQIRating
+  avgAqi: number
+  peakAqi: number
+  totalReadings: number
+  samples: WaqiTelemetrySample[]
+}
+
+const WAQI_TOKEN = process.env.NEXT_PUBLIC_WAQI_TOKEN || 'demo'
+const WAQI_HISTORY_DAYS = 30
+const WAQI_POLL_INTERVAL_MS = 5 * 60 * 1000
+
+const ratingBands: Array<{
+  max: number
+  label: AQIRating
+  badge: string
+  border: string
+  soft: string
+  text: string
+}> = [
+  { max: 50, label: 'Good', badge: 'bg-emerald-500/20 text-emerald-200 border-emerald-400/30', border: 'border-emerald-400/35', soft: 'bg-emerald-500/10', text: 'text-emerald-300' },
+  { max: 100, label: 'Moderate', badge: 'bg-yellow-500/20 text-yellow-200 border-yellow-400/30', border: 'border-yellow-400/35', soft: 'bg-yellow-500/10', text: 'text-yellow-300' },
+  { max: 150, label: 'Unhealthy for Sensitive Groups', badge: 'bg-orange-500/20 text-orange-200 border-orange-400/30', border: 'border-orange-400/35', soft: 'bg-orange-500/10', text: 'text-orange-300' },
+  { max: 200, label: 'Unhealthy', badge: 'bg-red-500/20 text-red-200 border-red-400/30', border: 'border-red-400/35', soft: 'bg-red-500/10', text: 'text-red-300' },
+  { max: 300, label: 'Very Unhealthy', badge: 'bg-fuchsia-500/20 text-fuchsia-200 border-fuchsia-400/30', border: 'border-fuchsia-400/35', soft: 'bg-fuchsia-500/10', text: 'text-fuchsia-300' },
+  { max: Number.POSITIVE_INFINITY, label: 'Hazardous', badge: 'bg-rose-600/20 text-rose-100 border-rose-400/30', border: 'border-rose-400/35', soft: 'bg-rose-600/10', text: 'text-rose-200' },
+]
+
+function getAqiBand(aqi: number) {
+  return ratingBands.find(b => aqi <= b.max) ?? ratingBands[ratingBands.length - 1]
+}
+
+function formatDayKey(date: Date) {
+  return date.toLocaleDateString('en-CA')
+}
+
+function formatDayLabel(date: Date) {
+  return date.toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  })
+}
+
+function safeNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function mapLegacyReadingToSample(node: NodeData, readings: PollutionReadings): WaqiTelemetrySample {
+  const avg = Math.round(
+    (readings.industrialEmissions + readings.vehicleSoot + readings.biomassBurning) / 3
+  )
+
+  const band = getAqiBand(avg)
+
+  const iaqi = {
+    pm25: readings.pm25 ?? avg,
+    pm10: readings.pm10 ?? avg + 10,
+    no2: readings.no2 ?? Math.max(0, avg - 5),
+    so2: readings.so2 ?? Math.max(0, avg - 8),
+    o3: readings.o3 ?? Math.max(0, avg + 12),
+    temp: readings.temperature ?? 28,
+    humidity: readings.humidity ?? 60,
+    wind: readings.windSpeed ?? 5,
+  }
+
+  return {
+    id: `fallback-${node.id}-${readings.timestamp.toISOString()}`,
+    timestamp: readings.timestamp.toISOString(),
+    aqi: avg,
+    rating: band.label,
+    stationName: node.name,
+    cityName: node.name,
+    dominantPollutant: 'pm25',
+    lat: node.lat,
+    lng: node.lng,
+    iaqi,
+    source: 'fallback',
+  }
+}
+
+async function fetchWaqiFeed(lat: number, lng: number, signal: AbortSignal): Promise<WaqiTelemetrySample | null> {
+  const url = new URL(`https://api.waqi.info/feed/geo:${lat};${lng}/`)
+  url.searchParams.set('token', WAQI_TOKEN)
+
+  const response = await fetch(url.toString(), {
+    signal,
+    headers: { Accept: 'application/json' },
+  })
+
+  if (!response.ok) {
+    throw new Error(`WAQI request failed: ${response.status}`)
+  }
+
+  const payload = (await response.json()) as WaqiApiResponse
+
+  if (payload.status !== 'ok' || !payload.data) {
+    return null
+  }
+
+  const data = payload.data
+  const aqi = safeNumber(data.aqi)
+  if (typeof aqi !== 'number') return null
+
+  const band = getAqiBand(aqi)
+  const iaqi: Record<string, number> = {}
+  for (const [key, value] of Object.entries(data.iaqi ?? {})) {
+    const numberValue = safeNumber(value?.v)
+    if (typeof numberValue === 'number') {
+      iaqi[key] = numberValue
+    }
+  }
+
+  const latValue = safeNumber(data.city?.geo?.[0]) ?? lat
+  const lngValue = safeNumber(data.city?.geo?.[1]) ?? lng
+  const stationName = data.city?.name || 'WAQI Station'
+  const cityName = data.city?.name || stationName
+
+  return {
+    id: `waqi-${latValue.toFixed(4)}-${lngValue.toFixed(4)}-${data.time?.s ?? Date.now()}`,
+    timestamp: data.time?.s
+      ? new Date(data.time.s).toISOString()
+      : new Date().toISOString(),
+    aqi,
+    rating: band.label,
+    stationName,
+    cityName,
+    dominantPollutant: data.dominentpol,
+    lat: latValue,
+    lng: lngValue,
+    iaqi,
+    source: 'waqi',
+  }
+}
+
+function useWaqiTelemetry(node: NodeData | null) {
+  const [current, setCurrent] = useState<WaqiTelemetrySample | null>(null)
+  const [history, setHistory] = useState<WaqiTelemetrySample[]>([])
+  const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const storageKey = useMemo(() => {
+    if (!node) return null
+    return `waqi-history:${node.id}:${node.lat.toFixed(4)}:${node.lng.toFixed(4)}`
+  }, [node?.id, node?.lat, node?.lng])
+
+  useEffect(() => {
+    if (!storageKey || typeof window === 'undefined') {
+      setCurrent(null)
+      setHistory([])
+      return
+    }
+
+    try {
+      const raw = window.localStorage.getItem(storageKey)
+      if (!raw) {
+        setCurrent(null)
+        setHistory([])
+        return
+      }
+
+      const parsed = JSON.parse(raw) as WaqiTelemetrySample[]
+      const valid = Array.isArray(parsed) ? parsed.filter(Boolean).slice(-2000) : []
+      setHistory(valid)
+      setCurrent(valid.at(-1) ?? null)
+    } catch {
+      setHistory([])
+      setCurrent(null)
+    }
+  }, [storageKey])
+
+  const persistHistory = useCallback(
+    (samples: WaqiTelemetrySample[]) => {
+      if (!storageKey || typeof window === 'undefined') return
+      try {
+        window.localStorage.setItem(storageKey, JSON.stringify(samples.slice(-2000)))
+      } catch {
+        // Ignore quota/storage issues.
+      }
+    },
+    [storageKey]
+  )
+
+  const recordSample = useCallback(
+    (sample: WaqiTelemetrySample) => {
+      setCurrent(sample)
+      setHistory(prev => {
+        const next = [...prev]
+        const last = next.at(-1)
+        if (!last || last.timestamp !== sample.timestamp || last.aqi !== sample.aqi) {
+          next.push(sample)
+        }
+        const trimmed = next.slice(-2000)
+        persistHistory(trimmed)
+
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(
+            new CustomEvent('waqi-telemetry-update', {
+              detail: {
+                ...sample,
+                nodeId: node?.id,
+                nodeName: node?.name,
+              },
+            })
+          )
+        }
+
+        return trimmed
+      })
+    },
+    [persistHistory]
+  )
+
+  const refresh = useCallback(
+    async (signal?: AbortSignal) => {
+      if (!node) return
+
+      setIsLoading(true)
+      setError(null)
+
+      try {
+        const live = await fetchWaqiFeed(node.lat, node.lng, signal ?? new AbortController().signal)
+        if (live) {
+          recordSample(live)
+        } else if (node.readings) {
+          recordSample(mapLegacyReadingToSample(node, node.readings))
+        } else {
+          setError('WAQI did not return a live station for this location.')
+        }
+      } catch (err) {
+        if ((err as Error).name !== 'AbortError') {
+          setError('Unable to load live WAQI telemetry right now.')
+          if (node.readings) {
+            recordSample(mapLegacyReadingToSample(node, node.readings))
+          }
+        }
+      } finally {
+        setIsLoading(false)
+      }
+    },
+    [node, recordSample]
+  )
+
+  useEffect(() => {
+    if (!node) {
+      setCurrent(null)
+      setHistory([])
+      setError(null)
+      setIsLoading(false)
+      return
+    }
+
+    const controller = new AbortController()
+    refresh(controller.signal)
+
+    const intervalId = window.setInterval(() => {
+      refresh(new AbortController().signal)
+    }, WAQI_POLL_INTERVAL_MS)
+
+    return () => {
+      controller.abort()
+      window.clearInterval(intervalId)
+    }
+  }, [node?.id, node?.lat, node?.lng, refresh])
+
+  return { current, history, isLoading, error, refresh }
+}
+
+function buildDailySummaries(samples: WaqiTelemetrySample[]): WaqiDaySummary[] {
+  const groups = new Map<string, WaqiTelemetrySample[]>()
+
+  for (const sample of samples) {
+    const date = new Date(sample.timestamp)
+    const dayKey = formatDayKey(date)
+    const existing = groups.get(dayKey) ?? []
+    existing.push(sample)
+    groups.set(dayKey, existing)
+  }
+
+  return [...groups.entries()]
+    .map(([dayKey, daySamples]) => {
+      const totalReadings = daySamples.length
+      const values = daySamples.map(s => s.aqi)
+      const avgAqi = Math.round(values.reduce((a, b) => a + b, 0) / totalReadings)
+      const peakAqi = Math.max(...values)
+      const band = getAqiBand(avgAqi)
+
+      return {
+        dayKey,
+        label: formatDayLabel(new Date(daySamples[0].timestamp)),
+        date: new Date(daySamples[0].timestamp),
+        rating: band.label,
+        avgAqi,
+        peakAqi,
+        totalReadings,
+        samples: daySamples.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()),
+      } satisfies WaqiDaySummary
+    })
+    .sort((a, b) => b.dayKey.localeCompare(a.dayKey))
+}
+
 const NodeReadingsDashboard: FC<{ node: NodeData | null }> = ({ node }) => {
   const [isExpanded, setIsExpanded] = useState(true)
+  const [openDay, setOpenDay] = useState<string | null>(null)
+  const { current, history, isLoading, error, refresh } = useWaqiTelemetry(node)
+
   const toggleExpanded = useCallback(() => setIsExpanded(p => !p), [])
 
-  if (!node?.readings) {
+  const dailySummaries = useMemo(() => buildDailySummaries(history), [history])
+
+  const liveReading = current ?? (
+    node?.readings ? mapLegacyReadingToSample(node, node.readings) : null
+  )
+
+  if (!node) {
     return (
       <div className="bg-gradient-to-br from-gray-900/95 to-gray-800/95 backdrop-blur-xl border border-white/10 rounded-2xl p-6">
         <div className="text-center">
           <Target className="w-8 h-8 text-white/30 mx-auto mb-3" />
           <p className="text-white/60 text-sm">No node selected</p>
           <p className="text-white/40 text-xs mt-1">
-            Click on a node on the map to view readings
+            Click on a node on the map to view live WAQI telemetry
           </p>
         </div>
       </div>
     )
   }
 
-  const { readings } = node
-  const getRatingColor = (value: number) =>
-    value < 25
-      ? 'text-green-400'
-      : value < 50
-      ? 'text-yellow-400'
-      : value < 75
-      ? 'text-orange-400'
-      : 'text-red-400'
-
-  const getOverallColor = (rating: string) => {
-    switch (rating) {
-      case 'Good':
-        return 'border-green-400/40 bg-green-500/10'
-      case 'Moderate':
-        return 'border-yellow-400/40 bg-yellow-500/10'
-      case 'Poor':
-        return 'border-orange-400/40 bg-orange-500/10'
-      case 'Hazardous':
-        return 'border-red-400/40 bg-red-500/10'
-      default:
-        return 'border-white/20 bg-white/5'
-    }
-  }
+  const tone = liveReading ? getAqiBand(liveReading.aqi) : ratingBands[0]
 
   return (
     <motion.div
       initial={{ y: 20, opacity: 0 }}
       animate={{ y: 0, opacity: 1 }}
-      className="bg-gradient-to-br from-gray-900/95 to-gray-800/95 backdrop-blur-xl border border-white/10 rounded-2xl overflow-hidden shadow-2xl"
+      className={`bg-gradient-to-br from-gray-900/95 to-gray-800/95 backdrop-blur-xl border rounded-2xl overflow-hidden shadow-2xl ${tone.border}`}
     >
       {/* Header */}
       <div
         className="p-4 border-b border-white/10 flex items-center justify-between cursor-pointer hover:bg-white/5 transition-colors"
         onClick={toggleExpanded}
       >
-        <div className="flex items-center gap-3">
-          <div
-            className={`w-2 h-2 rounded-full ${
-              node.isActive ? 'bg-green-400 animate-pulse' : 'bg-red-400'
-            }`}
-          />
-          <div>
-            <h3 className="text-white font-semibold">{node.name}</h3>
-            <p className="text-white/40 text-xs">
-              {node.lat.toFixed(4)}, {node.lng.toFixed(4)} • Radius:{' '}
-              {node.radiusKm}km
+        <div className="flex items-center gap-3 min-w-0">
+          <div className={`w-2 h-2 rounded-full ${isLoading ? 'bg-blue-400 animate-pulse' : liveReading ? 'bg-green-400 animate-pulse' : 'bg-red-400'}`} />
+          <div className="min-w-0">
+            <h3 className="text-white font-semibold truncate">{node.name}</h3>
+            <p className="text-white/40 text-xs truncate">
+              {node.lat.toFixed(4)}, {node.lng.toFixed(4)} • Radius {node.radiusKm}km
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <span
-            className={`text-xs px-2 py-1 rounded-full ${getOverallColor(
-              readings.overallRating
-            )}`}
-          >
-            {readings.overallRating}
-          </span>
+        <div className="flex items-center gap-2 shrink-0">
+          {liveReading && (
+            <span className={`text-xs px-2 py-1 rounded-full border ${tone.badge}`}>
+              {liveReading.source === 'waqi' ? 'WAQI Live' : 'Fallback'}
+            </span>
+          )}
           {isExpanded ? (
             <ChevronUp className="w-4 h-4 text-white/40" />
           ) : (
@@ -271,40 +617,202 @@ const NodeReadingsDashboard: FC<{ node: NodeData | null }> = ({ node }) => {
             transition={{ duration: 0.3 }}
             className="p-4 space-y-4"
           >
-            {/* Overall rating card */}
-            <div
-              className={`border rounded-xl p-4 ${getOverallColor(
-                readings.overallRating
-              )}`}
-            >
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-white/70">
-                    Overall Air Quality
-                  </p>
-                  <p
-                    className={`text-3xl font-bold ${getRatingColor(
-                      (readings.industrialEmissions +
-                        readings.vehicleSoot +
-                        readings.biomassBurning) /
-                        3
-                    )}`}
-                  >
-                    {readings.overallRating}
-                  </p>
-                </div>
-
-                <div className="text-right">
-                  <p className="text-xs text-white/40">Last updated</p>
-                  <p className="text-xs text-white/60">
-                    {readings.timestamp.toLocaleTimeString()}
-                  </p>
-                </div>
+            {!liveReading ? (
+              <div className="rounded-xl border border-white/10 bg-white/5 p-4 text-center">
+                <Activity className="w-8 h-8 text-white/30 mx-auto mb-3" />
+                <p className="text-white/70 text-sm">No live telemetry yet</p>
+                <p className="text-white/40 text-xs mt-1">
+                  The dashboard will poll WAQI for this node&apos;s location and keep a local history.
+                </p>
               </div>
-            </div>
+            ) : (
+              <>
+                {/* Live overview */}
+                <div className={`border rounded-xl p-4 ${tone.soft} ${tone.border}`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-white/70 flex items-center gap-2">
+                        <Gauge className="w-4 h-4 text-white/70" />
+                        Live Air Quality
+                      </p>
+                      <p className={`text-4xl font-bold mt-1 ${tone.text}`}>
+                        {liveReading.aqi}
+                      </p>
+                      <p className="text-xs text-white/55 mt-1">
+                        {liveReading.rating} • {liveReading.stationName}
+                      </p>
+                    </div>
 
-            {/* Pollution grid – unchanged */}
-            {/* …rest of the component stays exactly the same… */}
+                    <div className="text-right shrink-0">
+                      <p className="text-xs text-white/40">Last updated</p>
+                      <p className="text-xs text-white/70 flex items-center gap-1 justify-end">
+                        <Clock3 className="w-3 h-3" />
+                        {new Date(liveReading.timestamp).toLocaleString()}
+                      </p>
+                      <button
+                        onClick={e => {
+                          e.stopPropagation()
+                          refresh()
+                        }}
+                        className="mt-2 text-xs px-2.5 py-1 rounded-full bg-white/10 text-white/70 hover:bg-white/15 transition-colors"
+                        data-drag-ignore="true"
+                      >
+                        Refresh
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {Object.entries(liveReading.iaqi).slice(0, 8).map(([key, value]) => (
+                      <div key={key} className="rounded-xl bg-black/20 p-2.5">
+                        <p className="text-[10px] uppercase tracking-wide text-white/35">{key}</p>
+                        <p className="mt-1 text-sm font-semibold text-white">{value}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Source / node info */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                    <p className="text-[11px] text-white/35">Station / City</p>
+                    <p className="text-sm text-white mt-1">{liveReading.cityName}</p>
+                  </div>
+                  <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                    <p className="text-[11px] text-white/35">Dominant pollutant</p>
+                    <p className="text-sm text-white mt-1">{liveReading.dominantPollutant ?? 'n/a'}</p>
+                  </div>
+                </div>
+
+                {/* History panel */}
+                <div className="rounded-xl border border-white/10 bg-white/5 p-4">
+                  <div className="flex items-center justify-between gap-2 mb-3">
+                    <div>
+                      <h4 className="text-sm font-semibold text-white flex items-center gap-2">
+                        <CalendarDays className="w-4 h-4 text-blue-300" />
+                        Telemetry History
+                      </h4>
+                      <p className="text-xs text-white/40">
+                        Daily ratings, average AQI, peak AQI, and total readings
+                      </p>
+                    </div>
+                    <span className="text-[11px] text-white/35">
+                      {history.length} reading{history.length === 1 ? '' : 's'}
+                    </span>
+                  </div>
+
+                  {error && (
+                    <div className="mb-3 rounded-lg border border-amber-400/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                      {error}
+                    </div>
+                  )}
+
+                  {dailySummaries.length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-white/10 bg-black/20 px-4 py-6 text-center">
+                      <TrendingUp className="w-6 h-6 text-white/30 mx-auto mb-2" />
+                      <p className="text-sm text-white/65">Waiting for history to build up</p>
+                      <p className="text-xs text-white/40 mt-1">
+                        As telemetry polls continue, the dashboard will aggregate each day automatically.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {dailySummaries.map(day => {
+                        const band = getAqiBand(day.avgAqi)
+                        const expanded = openDay === day.dayKey
+
+                        return (
+                          <div
+                            key={day.dayKey}
+                            className={`rounded-xl border ${band.border} bg-black/15 overflow-hidden`}
+                          >
+                            <button
+                              onClick={e => {
+                                e.stopPropagation()
+                                setOpenDay(prev => (prev === day.dayKey ? null : day.dayKey))
+                              }}
+                              className="w-full p-3 text-left"
+                              data-drag-ignore="true"
+                            >
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <p className="text-sm font-medium text-white">{day.label}</p>
+                                  <p className="text-xs text-white/45 mt-1">
+                                    Daily rating • {day.totalReadings} reading{day.totalReadings === 1 ? '' : 's'}
+                                  </p>
+                                </div>
+
+                                <div className="text-right shrink-0">
+                                  <div className={`inline-flex text-[11px] px-2.5 py-1 rounded-full border ${band.badge}`}>
+                                    {day.rating}
+                                  </div>
+                                  <p className="text-xs text-white/50 mt-2">
+                                    Avg {day.avgAqi} • Peak {day.peakAqi}
+                                  </p>
+                                </div>
+                              </div>
+                            </button>
+
+                            <AnimatePresence>
+                              {expanded && (
+                                <motion.div
+                                  initial={{ height: 0, opacity: 0 }}
+                                  animate={{ height: 'auto', opacity: 1 }}
+                                  exit={{ height: 0, opacity: 0 }}
+                                  transition={{ duration: 0.22 }}
+                                  className="border-t border-white/10 p-3 space-y-3"
+                                >
+                                  <div className="grid grid-cols-3 gap-2">
+                                    <div className="rounded-lg bg-white/5 p-2">
+                                      <p className="text-[10px] text-white/35">Average AQI</p>
+                                      <p className="text-sm font-semibold text-white">{day.avgAqi}</p>
+                                    </div>
+                                    <div className="rounded-lg bg-white/5 p-2">
+                                      <p className="text-[10px] text-white/35">Peak AQI</p>
+                                      <p className="text-sm font-semibold text-white">{day.peakAqi}</p>
+                                    </div>
+                                    <div className="rounded-lg bg-white/5 p-2">
+                                      <p className="text-[10px] text-white/35">Total</p>
+                                      <p className="text-sm font-semibold text-white">{day.totalReadings}</p>
+                                    </div>
+                                  </div>
+
+                                  <div className="space-y-2">
+                                    {day.samples.map(sample => (
+                                      <div
+                                        key={sample.id}
+                                        className="rounded-lg border border-white/10 bg-black/20 p-3"
+                                      >
+                                        <div className="flex items-center justify-between gap-2">
+                                          <p className="text-xs text-white/45">
+                                            {new Date(sample.timestamp).toLocaleTimeString()}
+                                          </p>
+                                          <span className={`text-[11px] px-2 py-0.5 rounded-full border ${getAqiBand(sample.aqi).badge}`}>
+                                            AQI {sample.aqi}
+                                          </span>
+                                        </div>
+                                        <div className="mt-2 grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                                          {Object.entries(sample.iaqi).slice(0, 4).map(([key, value]) => (
+                                            <div key={key} className="rounded-md bg-white/5 px-2 py-1.5">
+                                              <p className="text-white/35 uppercase text-[10px]">{key}</p>
+                                              <p className="text-white mt-0.5">{value}</p>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </motion.div>
+                              )}
+                            </AnimatePresence>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
           </motion.div>
         )}
       </AnimatePresence>
@@ -312,6 +820,9 @@ const NodeReadingsDashboard: FC<{ node: NodeData | null }> = ({ node }) => {
   )
 }
 
+/* ----------------------------------------------------------------------
+   AddNodeDialog – main component (glass‑morphism UI)
+----------------------------------------------------------------------- */
 /* ----------------------------------------------------------------------
    AddNodeDialog – main component (glass‑morphism UI)
 ----------------------------------------------------------------------- */
