@@ -37,6 +37,22 @@
  * else is on the page, instead of depending on Leaflet's un-enforced
  * default pane order.
  * ────────────────────────────────────────────────────────────────────────
+ *
+ * FIX LOG (this pass) — Next.js prerender / SSR
+ * ────────────────────────────────────────────────────────────────────────
+ * Leaflet accesses `window` at module-evaluation time. Even with
+ * `'use client'`, Next.js still evaluates the module during static
+ * prerender of /dashboard, so a top-level `import L from 'leaflet'`
+ * crashes the build with `ReferenceError: window is not defined`.
+ *
+ * Fix: import leaflet's TYPES only at the top (`import type * as L`),
+ * which is erased at compile time, and load the actual runtime module
+ * lazily inside the mount useEffect via `await import('leaflet')`.
+ * The resolved namespace is stored in a ref (`LRef`) so every other
+ * effect/callback can still call `L.map`, `L.marker`, etc. exactly as
+ * before. All existing logic, prop shapes, and Leaflet API calls are
+ * unchanged.
+ * ────────────────────────────────────────────────────────────────────────
  */
 
 'use client'
@@ -48,7 +64,7 @@ import {
   useRef,
   useState,
 } from 'react'
-import L from 'leaflet'
+import type * as L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 
 import {
@@ -267,6 +283,11 @@ export const PollutionMap: FC<MapProps> = ({
 }) => {
   const mapContainer = useRef<HTMLDivElement>(null)
 
+  /* Runtime Leaflet namespace — populated inside the mount effect after
+     `await import('leaflet')`. Typed loosely (`any`) on purpose so that all
+     existing `L.xxx(...)` calls below compile unchanged. */
+  const LRef = useRef<any>(null)
+
   /* Leaflet instances (kept in refs to avoid re‑creating) */
   const mapInstance = useRef<L.Map | null>(null)
   const markersLayer = useRef<L.LayerGroup | null>(null)
@@ -283,133 +304,147 @@ export const PollutionMap: FC<MapProps> = ({
   const [currentZoom, setCurrentZoom] = useState(10)
 
   /* ------------------------------------------------------------------
-     Initialise Leaflet map – one‑time only
+     Initialise Leaflet map – one‑time only.
+     Leaflet is imported lazily here (never at module top level) so
+     nothing touches `window` during Next.js static prerender.
   ------------------------------------------------------------------ */
   useEffect(() => {
     if (!mapContainer.current || mapInstance.current) return
 
-    const map = L.map(mapContainer.current, {
-      center: [currentCenter.lat, currentCenter.lng],
-      zoom: currentZoom,
-      zoomControl: false, // we use custom controls
-      attributionControl: true,
-      fadeAnimation: true,
-      zoomAnimation: true,
-      preferCanvas: true,
-    })
+    let cancelled = false
 
-    // OSM base tiles
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution:
-        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-      maxZoom: 19,
-      minZoom: 3,
-    }).addTo(map)
+    ;(async () => {
+      const mod: any = await import('leaflet')
+      const L = mod.default ?? mod
 
-    // Dedicated panes with an explicit, hard-enforced z-index (see <style>
-    // block below, `.leaflet-pane` rules with !important). We do NOT rely
-    // on Leaflet's default pane z-indexes alone (tilePane 200, overlayPane
-    // 400, markerPane 600, popupPane 700) because those are only set via
-    // inline style at pane-creation time, without !important — any global
-    // app CSS that later touches `.leaflet-pane` / `.leaflet-overlay-pane`
-    // can silently override them and push the perimeter circle or pointer
-    // markers underneath the tile layer. Custom panes + !important CSS
-    // guarantee these always render on top, independent of the rest of
-    // the app's stylesheet.
-    map.createPane('perimeterPane')
-    map.getPane('perimeterPane')!.style.zIndex = '450'
-    map.createPane('pointerPane')
-    map.getPane('pointerPane')!.style.zIndex = '650'
+      if (cancelled || !mapContainer.current || mapInstance.current) return
 
-    // Layer groups – keep them separate for easier cleanup
-    markersLayer.current = L.layerGroup().addTo(map)
-    sourcesLayer.current = L.layerGroup().addTo(map)
-    perimeterLayer.current = L.layerGroup().addTo(map)
+      LRef.current = L
 
-    // ------- map event listeners ------------------------------------
-    map.on('moveend', () => {
-      const c = map.getCenter()
-      setCurrentCenter({ lat: c.lat, lng: c.lng })
-    })
-    map.on('zoomend', () => setCurrentZoom(map.getZoom()))
+      const map = L.map(mapContainer.current, {
+        center: [currentCenter.lat, currentCenter.lng],
+        zoom: currentZoom,
+        zoomControl: false, // we use custom controls
+        attributionControl: true,
+        fadeAnimation: true,
+        zoomAnimation: true,
+        preferCanvas: true,
+      })
 
-    // Click‑mode handling
-    map.on('click', (e: L.LeafletMouseEvent) => {
-      // Guard: ignore clicks that actually originated on Leaflet's own UI
-      // chrome (attribution/zoom control container, an open popup, or a
-      // marker icon) rather than the bare map surface. Leaflet's control
-      // container spans the full map with `pointer-events: none` on its
-      // empty space by default so clicks normally pass through to the map
-      // — but that default isn't `!important` (see the CSS block below),
-      // so any global app stylesheet that touches pointer-events can
-      // re-enable hit-testing on that empty space and "steal" clicks meant
-      // for node placement. This check makes node placement immune to that
-      // regardless of what the surrounding CSS does.
-      const originalTarget = e.originalEvent?.target as HTMLElement | null
-      if (
-        originalTarget?.closest(
-          '.leaflet-control, .leaflet-popup, .leaflet-marker-icon, .leaflet-control-container',
-        )
-      ) {
-        return
-      }
+      // OSM base tiles
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution:
+          '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+        maxZoom: 19,
+        minZoom: 3,
+      }).addTo(map)
 
-      if (isClickMode && onMapClick) {
-        // small temporary click indicator
-        if (clickMarker.current) clickMarker.current.remove()
+      // Dedicated panes with an explicit, hard-enforced z-index (see <style>
+      // block below, `.leaflet-pane` rules with !important). We do NOT rely
+      // on Leaflet's default pane z-indexes alone (tilePane 200, overlayPane
+      // 400, markerPane 600, popupPane 700) because those are only set via
+      // inline style at pane-creation time, without !important — any global
+      // app CSS that later touches `.leaflet-pane` / `.leaflet-overlay-pane`
+      // can silently override them and push the perimeter circle or pointer
+      // markers underneath the tile layer. Custom panes + !important CSS
+      // guarantee these always render on top, independent of the rest of
+      // the app's stylesheet.
+      map.createPane('perimeterPane')
+      map.getPane('perimeterPane')!.style.zIndex = '450'
+      map.createPane('pointerPane')
+      map.getPane('pointerPane')!.style.zIndex = '650'
 
-        const icon = L.divIcon({
-          className: 'click-indicator',
-          html: `
-            <div style="
-              width:20px;height:20px;
-              background:rgba(52,152,219,0.8);
-              border-radius:50%;
-              border:3px solid white;
-              box-shadow:0 0 30px rgba(52,152,219,0.6);
-              animation:clickPulse .6s ease-out;
-            ">
+      // Layer groups – keep them separate for easier cleanup
+      markersLayer.current = L.layerGroup().addTo(map)
+      sourcesLayer.current = L.layerGroup().addTo(map)
+      perimeterLayer.current = L.layerGroup().addTo(map)
+
+      // ------- map event listeners ------------------------------------
+      map.on('moveend', () => {
+        const c = map.getCenter()
+        setCurrentCenter({ lat: c.lat, lng: c.lng })
+      })
+      map.on('zoomend', () => setCurrentZoom(map.getZoom()))
+
+      // Click‑mode handling
+      map.on('click', (e: L.LeafletMouseEvent) => {
+        // Guard: ignore clicks that actually originated on Leaflet's own UI
+        // chrome (attribution/zoom control container, an open popup, or a
+        // marker icon) rather than the bare map surface. Leaflet's control
+        // container spans the full map with `pointer-events: none` on its
+        // empty space by default so clicks normally pass through to the map
+        // — but that default isn't `!important` (see the CSS block below),
+        // so any global app stylesheet that touches pointer-events can
+        // re-enable hit-testing on that empty space and "steal" clicks meant
+        // for node placement. This check makes node placement immune to that
+        // regardless of what the surrounding CSS does.
+        const originalTarget = e.originalEvent?.target as HTMLElement | null
+        if (
+          originalTarget?.closest(
+            '.leaflet-control, .leaflet-popup, .leaflet-marker-icon, .leaflet-control-container',
+          )
+        ) {
+          return
+        }
+
+        if (isClickMode && onMapClick) {
+          // small temporary click indicator
+          if (clickMarker.current) clickMarker.current.remove()
+
+          const icon = L.divIcon({
+            className: 'click-indicator',
+            html: `
               <div style="
-                position:absolute;top:50%;left:50%;
-                transform:translate(-50%,-50%);
-                width:6px;height:6px;
-                background:white;
+                width:20px;height:20px;
+                background:rgba(52,152,219,0.8);
                 border-radius:50%;
-              "></div>
-            </div>
-            <style>
-              @keyframes clickPulse{
-                0%{transform:scale(.5);opacity:1;}
-                100%{transform:scale(2);opacity:0;}
-              }
-            </style>
-          `,
-          iconSize: [20, 20],
-          iconAnchor: [10, 10],
-        })
-        // Rendered in the dedicated `pointerPane` (z-index 650, !important)
-        // instead of Leaflet's default markerPane so it's guaranteed to sit
-        // above the tile layer even if global CSS overrides default panes.
-        clickMarker.current = L.marker(e.latlng, {
-          icon,
-          pane: 'pointerPane',
-        }).addTo(map)
+                border:3px solid white;
+                box-shadow:0 0 30px rgba(52,152,219,0.6);
+                animation:clickPulse .6s ease-out;
+              ">
+                <div style="
+                  position:absolute;top:50%;left:50%;
+                  transform:translate(-50%,-50%);
+                  width:6px;height:6px;
+                  background:white;
+                  border-radius:50%;
+                "></div>
+              </div>
+              <style>
+                @keyframes clickPulse{
+                  0%{transform:scale(.5);opacity:1;}
+                  100%{transform:scale(2);opacity:0;}
+                }
+              </style>
+            `,
+            iconSize: [20, 20],
+            iconAnchor: [10, 10],
+          })
+          // Rendered in the dedicated `pointerPane` (z-index 650, !important)
+          // instead of Leaflet's default markerPane so it's guaranteed to sit
+          // above the tile layer even if global CSS overrides default panes.
+          clickMarker.current = L.marker(e.latlng, {
+            icon,
+            pane: 'pointerPane',
+          }).addTo(map)
 
-        setTimeout(() => {
-          clickMarker.current?.remove()
-          clickMarker.current = null
-        }, 1000)
+          setTimeout(() => {
+            clickMarker.current?.remove()
+            clickMarker.current = null
+          }, 1000)
 
-        onMapClick(e.latlng.lat, e.latlng.lng)
-      }
-    })
+          onMapClick(e.latlng.lat, e.latlng.lng)
+        }
+      })
 
-    mapInstance.current = map
-    setMapReady(true)
+      mapInstance.current = map
+      setMapReady(true)
+    })()
 
     // cleanup on unmount
     return () => {
-      map.remove()
+      cancelled = true
+      mapInstance.current?.remove()
       mapInstance.current = null
     }
   }, []) // empty deps → runs once
@@ -439,7 +474,8 @@ export const PollutionMap: FC<MapProps> = ({
      MARKERS – monitoring nodes
   ------------------------------------------------------------------ */
   const updateNodeMarkers = useCallback(() => {
-    if (!mapInstance.current || !markersLayer.current || !mapReady) return
+    const L = LRef.current
+    if (!L || !mapInstance.current || !markersLayer.current || !mapReady) return
 
     markersLayer.current.clearLayers()
 
@@ -550,7 +586,8 @@ export const PollutionMap: FC<MapProps> = ({
      MARKERS – pollution sources
   ------------------------------------------------------------------ */
   const updateSourceMarkers = useCallback(() => {
-    if (!mapInstance.current || !sourcesLayer.current || !mapReady) return
+    const L = LRef.current
+    if (!L || !mapInstance.current || !sourcesLayer.current || !mapReady) return
 
     sourcesLayer.current.clearLayers()
 
@@ -634,7 +671,8 @@ export const PollutionMap: FC<MapProps> = ({
      PERIMETER – draw a radius circle for the selected node
   ------------------------------------------------------------------ */
   useEffect(() => {
-    if (!mapInstance.current || !perimeterLayer.current || !mapReady) return
+    const L = LRef.current
+    if (!L || !mapInstance.current || !perimeterLayer.current || !mapReady) return
 
     perimeterLayer.current.clearLayers()
 
@@ -745,6 +783,8 @@ export const PollutionMap: FC<MapProps> = ({
     }
   }
   const handleLocateUser = () => {
+    const L = LRef.current
+    if (!L) return
     if (!navigator.geolocation) {
       alert('Geolocation is not supported by your browser')
       return
